@@ -31,10 +31,12 @@ locals {
   request_handler_lambda_role_arn       = local.request_handler_enabled ? module.request_handler[0].lambda_role_arn : null
   
   agent_runner_package_path             = try(var.agent_runner.package_path, null)
-  agent_runner_artifact_module_name     = coalesce(try(var.agent_runner.module_name, null), "${var.module_name}-agent-runner")
+  agent_runner_artifact_module_name     = var.agent_runner.module_name
   agent_runner_logs_retention_in_days   = try(var.agent_runner.cloudwatch_logs_retention_in_days, null)
 
   response_handler_package_path         = try(var.response_handler.package_path, null)
+  response_handler_package_type         = try(var.response_handler.package_type, null)
+  response_handler_artifact_module_name = var.response_handler.module_name
   response_handler_logs_retention_in_days = try(var.response_handler.cloudwatch_logs_retention_in_days, null)
 
   create_authorizer                     = var.enable_api_gateway && var.authorizer != null ? (var.authorizer.function_name != null && var.authorizer.handler_path != null && var.authorizer.package_type != null && var.authorizer.package_path != null && var.authorizer.module_name != null) : false
@@ -108,7 +110,7 @@ resource "aws_security_group" "lambda" {
 module "request_handler_source_storage" {
   count                = local.request_handler_enabled ? ((var.package_type == "S3Zip") ? 1 : 0) : 0
   source               = "yaalalabs/ak-common/aws//modules/s3"
-  version              = "0.3.3"
+  version              = "0.4.0"
   region               = var.region
   env_alias            = var.env_alias
   is_production        = var.is_production
@@ -120,7 +122,7 @@ module "request_handler_source_storage" {
 module "request_handler_source_package" {
   count            = local.request_handler_enabled ? ((var.package_type == "S3Zip") ? 1 : 0) : 0
   source           = "yaalalabs/ak-common/aws//modules/lambda-package"
-  version          = "0.3.3"
+  version          = "0.4.0"
   env_alias        = var.env_alias
   region           = var.region
   module_name      = var.module_name
@@ -132,7 +134,7 @@ module "request_handler_source_package" {
 
 module "vpc" {
   source               = "yaalalabs/ak-common/aws//modules/vpc"
-  version              = "0.3.3"
+  version              = "0.4.0"
   count                = var.vpc_id == null ? 1 : 0
   vpc_cidr             = var.vpc_cidr
   public_subnet_cidrs  = var.public_subnet_cidrs
@@ -146,7 +148,7 @@ module "vpc" {
 module "authorizer" {
   count                      = local.create_authorizer ? 1 : 0
   source                     = "yaalalabs/ak-common/aws//modules/authorizer"
-  version                    = "0.3.3"
+  version                    = "0.4.0"
   region                     = var.region
   product_alias              = var.product_alias
   env_alias                  = var.env_alias
@@ -197,7 +199,7 @@ module "api_gateway" {
 module "docker_image" {
   count         = local.request_handler_enabled ? ((var.package_type == "Image") ? 1 : 0) : 0
   source        = "yaalalabs/ak-common/aws//modules/ecr"
-  version       = "0.3.3"
+  version       = "0.4.0"
   env_alias     = var.env_alias
   module_name   = var.module_name
   product_alias = var.product_alias
@@ -207,7 +209,7 @@ module "docker_image" {
 module "agent_runner_source_storage" {
   count                = (var.agent_runner.package_type == "S3Zip") ? 1 : 0
   source               = "yaalalabs/ak-common/aws//modules/s3"
-  version              = "0.3.3"
+  version              = "0.4.0"
   region               = var.region
   env_alias            = var.env_alias
   is_production        = var.is_production
@@ -219,7 +221,7 @@ module "agent_runner_source_storage" {
 module "agent_runner_source_package" {
   count            = (var.agent_runner.package_type == "S3Zip") ? 1 : 0
   source           = "yaalalabs/ak-common/aws//modules/lambda-package"
-  version          = "0.3.3"
+  version          = "0.4.0"
   env_alias        = var.env_alias
   region           = var.region
   module_name      = local.agent_runner_artifact_module_name
@@ -232,16 +234,51 @@ module "agent_runner_source_package" {
 module "agent_runner_docker_image" {
   count         = (var.agent_runner.package_type == "Image") ? 1 : 0
   source        = "yaalalabs/ak-common/aws//modules/ecr"
-  version       = "0.3.3"
+  version       = "0.4.0"
   env_alias     = var.env_alias
   module_name   = local.agent_runner_artifact_module_name
   product_alias = var.product_alias
   source_path   = local.agent_runner_package_path
 }
 
+module "response_handler_source_storage" {
+  count                = var.queue_mode && local.response_handler_package_type == "S3Zip" ? 1 : 0
+  source               = "yaalalabs/ak-common/aws//modules/s3"
+  version              = "0.4.0"
+  region               = var.region
+  env_alias            = var.env_alias
+  is_production        = var.is_production
+  product_alias        = var.product_alias
+  product_display_name = var.product_display_name
+  s3_kms_key_id        = ""
+}
+
+module "response_handler_source_package" {
+  count            = var.queue_mode && local.response_handler_package_type == "S3Zip" ? 1 : 0
+  source           = "yaalalabs/ak-common/aws//modules/lambda-package"
+  version          = "0.4.0"
+  env_alias        = var.env_alias
+  region           = var.region
+  module_name      = local.response_handler_artifact_module_name
+  package_dir_path = local.response_handler_package_path
+  product_alias    = var.product_alias
+  s3_bucket        = module.response_handler_source_storage[0].source_storage_s3_bucket
+  depends_on       = [module.response_handler_source_storage]
+}
+
+module "response_handler_docker_image" {
+  count         = var.queue_mode && local.response_handler_package_type == "Image" ? 1 : 0
+  source        = "yaalalabs/ak-common/aws//modules/ecr"
+  version       = "0.4.0"
+  env_alias     = var.env_alias
+  module_name   = local.response_handler_artifact_module_name
+  product_alias = var.product_alias
+  source_path   = local.response_handler_package_path
+}
+
 module "redis" {
   source        = "yaalalabs/ak-common/aws//modules/redis"
-  version       = "0.3.3"
+  version       = "0.4.0"
   count         = (var.create_redis_cluster == true || var.create_redis_response_store) ? 1 : 0
   env_alias     = var.env_alias
   module_name   = var.module_name
@@ -253,7 +290,7 @@ module "redis" {
 
 module "dynamodb_memory" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.3.3"
+  version = "0.4.0"
   count   = var.create_dynamodb_memory_table == true ? 1 : 0
   attributes = [
     { name = "session_id", type = "S" },
@@ -271,7 +308,7 @@ module "dynamodb_memory" {
 
 module "dynamodb_multimodal_memory" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.3.3"
+  version = "0.4.0"
   count   = var.create_dynamodb_multimodal_memory_table == true ? 1 : 0
   attributes = [
     { name = "session_id", type = "S" },
@@ -319,7 +356,7 @@ check "queue_visibility_timeouts" {
 # DynamoDB response store module
 module "dynamodb_response_store" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.3.3"
+  version = "0.4.0"
   count   = var.create_dynamodb_response_store ? 1 : 0
 
   attributes = [
@@ -452,18 +489,24 @@ module "response_handler" {
   count  = var.queue_mode ? 1 : 0
   source = "./modules/response-handler"
 
-  package_path                      = local.response_handler_package_path
-  package_type                      = "Zip"
+  region                            = var.region
   cloudwatch_logs_retention_in_days = local.response_handler_logs_retention_in_days
   subnet_ids                        = local.subnet_ids
   security_group_id                 = local.security_group_id
   lambda_kms_key_arn                = local.lambda_kms_key_arn
   cloudwatch_kms_key_arn            = local.cloudwatch_kms_key_arn
+  source_bucket                     = local.response_handler_package_type == "S3Zip" ? module.response_handler_source_storage[0].source_storage_s3_bucket : null
+  docker_image_uri                  = local.response_handler_package_type == "Image" ? module.response_handler_docker_image[0].docker_image_uri : null
+  is_production                     = var.is_production
+  lambda_signer_profile_name        = local.lambda_signer_profile_name
+  lambda_signing_config_arn         = local.lambda_signing_config_arn
 
   product_alias = var.product_alias
   env_alias     = var.env_alias
-  module_name   = var.module_name
   response_handler = merge(var.response_handler, {
+    module_name = local.response_handler_artifact_module_name
+    package_path = local.response_handler_package_path
+    package_type = local.response_handler_package_type
     environment_variables = merge(try(var.response_handler.environment_variables, null), {
       AK_EXECUTION__MODE = var.execution_mode
     })
