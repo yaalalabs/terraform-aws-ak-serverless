@@ -54,10 +54,11 @@ variable "source_version_id" {
 }
 
 variable "s3_existing_package" {
-  description = "Pre-built s3_existing_package object from lambda-package module (bucket + key). Pass null for non-S3Zip deployments."
+  description = "Pre-built s3_existing_package object (bucket + key + optional version_id) for S3Zip deployments. A non-null version_id pins a specific S3 object version so package updates are redeployed. Pass null for non-S3Zip deployments."
   type = object({
-    bucket = string
-    key    = string
+    bucket     = string
+    key        = string
+    version_id = optional(string)
   })
   default = null
 }
@@ -213,9 +214,21 @@ variable "redis_url" {
   default     = null
 }
 
+variable "valkey_url" {
+  type        = string
+  description = "URL of the Valkey cluster"
+  default     = null
+}
+
 variable "response_store_redis" {
   type        = any
   description = "Redis response store configuration"
+  default     = null
+}
+
+variable "response_store_valkey" {
+  type        = any
+  description = "Valkey response store configuration"
   default     = null
 }
 

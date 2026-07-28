@@ -260,8 +260,9 @@ module "scalable_agents" {
     handler_path         = "lambda_request_handler.handler"
     package_type         = "S3Zip"
     lambda_package_s3 = {
-      bucket = "my-lambda-packages-bucket"
-      key    = "dist_request_handler.zip"
+      bucket     = "my-lambda-packages-bucket"
+      key        = "dist_request_handler.zip"
+      version_id = "<object-version-id>" 
     }
     memory_size = 256
     timeout     = 45
@@ -288,8 +289,9 @@ module "scalable_agents" {
     function_name        = "rsh-func"
     handler_path         = "lambda_response_handler.handler"
     lambda_package_s3 = {
-      bucket = "my-lambda-packages-bucket"
-      key    = "dist_response_handler.zip"
+      bucket     = "my-lambda-packages-bucket"
+      key        = "dist_response_handler.zip"
+      version_id = "<object-version-id>" # from your versioned bucket → redeploys update the Lambda (#548)
     }
     package_type = "S3Zip"
     memory_size  = 256
@@ -457,8 +459,10 @@ module "serverless_api_auth" {
 | `ws_routes` | List of custom WebSocket routes beyond the default chat route. Only allowed in `async`/`stream` modes. | `list(object)` | `[]` | no |
 | `gateway_endpoints` | List of REST API endpoints to expose. Not allowed in WebSocket modes. If empty, a default POST /api/{api_version}/{agent_endpoint} is created. | `list(object)` | `[]` | no |
 | `create_redis_cluster` | Create a Redis cluster for Agent session memory | `bool` | `false` | no |
+| `create_valkey_cluster` | Create a Valkey (ElastiCache) cluster for Agent session memory | `bool` | `false` | no |
 | `create_dynamodb_memory_table` | Enable DynamoDB table for session storage | `bool` | `false` | no |
 | `create_redis_response_store` | Create or reuse Redis for response storage. Ignored in WebSocket modes (`async`/`stream`). | `bool` | `false` | no |
+| `create_valkey_response_store` | Create or reuse Valkey for response storage. Ignored in WebSocket modes (`async`/`stream`). | `bool` | `false` | no |
 | `create_dynamodb_response_store` | Create a DynamoDB table for response storage. Ignored in WebSocket modes (`async`/`stream`). | `bool` | `false` | no |
 | `create_dynamodb_multimodal_memory_table` | Create a DynamoDB table for multimodal memory | `bool` | `false` | no |
 | `authorizer` | Authorizer configuration object (see table below). **Cannot be set** in WebSocket modes (`async`/`stream`) — authentication is handled by the connection handler Lambda. | `object` | `null` | no |
@@ -502,7 +506,7 @@ module "serverless_api_auth" {
 | `module_name` | Request handler module name | `string` | `"request-handler"` | no |
 | `package_path` | Request handler deployment package path (local ZIP or directory). Mutually exclusive with `lambda_package_s3` and `ecr_image_uri` | `string` | `null` | no |
 | `package_type` | Request handler deployment type (`LocalZip`, `S3Zip`, or `Image`) | `string` | `"LocalZip"` | no |
-| `lambda_package_s3` | S3 object reference for the Lambda ZIP (`{ bucket, key }`). Used when `package_type = "S3Zip"`. Mutually exclusive with `package_path` | `object` | `null` | no |
+| `lambda_package_s3` | S3 object reference for the Lambda ZIP (`{ bucket, key, version_id? }`). Used when `package_type = "S3Zip"`. Set `version_id` (from a versioned bucket) so re-uploading changed code redeploys the function | `object({ bucket = string, key = string, version_id = optional(string) })` | `null` | no |
 | `ecr_image_uri` | Pre-built ECR image URI. Used when `package_type = "Image"`. Mutually exclusive with `package_path` | `string` | `null` | no |
 | `layers` | List of Lambda layer ARNs to attach | `list(string)` | `[]` | no |
 | `cloudwatch_logs_retention_in_days` | CloudWatch log retention period in days | `number` | `90` | no |
@@ -573,7 +577,7 @@ This configuration creates WebSocket routes accessible via:
 | `module_name` | Response handler module name | `string` | `"response-handler"` | no |
 | `package_path` | Response handler deployment package path (local ZIP or directory). Mutually exclusive with `lambda_package_s3` and `ecr_image_uri` | `string` | `null` | no |
 | `package_type` | Response handler deployment type (`LocalZip`, `S3Zip`, or `Image`) | `string` | `"LocalZip"` | no |
-| `lambda_package_s3` | S3 object reference for the Lambda ZIP (`{ bucket, key }`). Used when `package_type = "S3Zip"`. Mutually exclusive with `package_path` | `object` | `null` | no |
+| `lambda_package_s3` | S3 object reference for the Lambda ZIP (`{ bucket, key, version_id? }`). Used when `package_type = "S3Zip"`. Set `version_id` (from a versioned bucket) so re-uploading changed code redeploys the function |
 | `ecr_image_uri` | Pre-built ECR image URI. Used when `package_type = "Image"`. Mutually exclusive with `package_path` | `string` | `null` | no |
 | `layers` | List of Lambda layer ARNs to attach | `list(string)` | `[]` | no |
 | `cloudwatch_logs_retention_in_days` | CloudWatch log retention period in days | `number` | `90` | no |
@@ -591,7 +595,7 @@ This configuration creates WebSocket routes accessible via:
 | `module_name` | Agent runner module name | `string` | `"agent-runner"` | no |
 | `package_path` | Agent runner deployment package path (local ZIP or directory). Mutually exclusive with `lambda_package_s3` and `ecr_image_uri` | `string` | `null` | no |
 | `package_type` | Agent runner deployment type (`LocalZip`, `S3Zip`, or `Image`) | `string` | `"LocalZip"` | no |
-| `lambda_package_s3` | S3 object reference for the Lambda ZIP (`{ bucket, key }`). Used when `package_type = "S3Zip"`. Mutually exclusive with `package_path` | `object` | `null` | no |
+| `lambda_package_s3` | S3 object reference for the Lambda ZIP (`{ bucket, key, version_id? }`). Used when `package_type = "S3Zip"`. Set `version_id` (from a versioned bucket) so re-uploading changed code redeploys the function  |
 | `ecr_image_uri` | Pre-built ECR image URI. Used when `package_type = "Image"`. Mutually exclusive with `package_path` | `string` | `null` | no |
 | `layers` | List of Lambda layer ARNs to attach | `list(string)` | `[]` | no |
 | `cloudwatch_logs_retention_in_days` | CloudWatch log retention period in days | `number` | `90` | no |
@@ -694,7 +698,7 @@ The root `queue_config` object drives the SQS queues created for queue mode. All
 
 **Multiple Deployment Methods**:
 - **LocalZip**: Deploy from local ZIP file (< 50 MB)
-- **S3Zip**: Deploy from S3 bucket with optional code signing
+- **S3Zip**: Deploy from S3 bucket with optional code signing (use a versioned bucket + `version_id` so code updates redeploy)
 - **Image**: Deploy from ECR container image (up to 10 GB)
 
 **Automatic Runtime Selection**:
@@ -796,6 +800,8 @@ The module supports the current Agent Kernel storage wiring for both session sta
 - Redis session memory via `create_redis_cluster`
 - Redis response storage via `create_redis_response_store`
 - Redis multimodal memory via `create_redis_cluster` and environmental variables *(more details in Agent Kernel Docs in Multimodal section)*
+- Valkey session memory via `create_valkey_cluster` (also requires `session.type: valkey` in `config.yaml`)
+- Valkey response storage via `create_valkey_response_store` (also requires `execution.response_store.type: valkey` in `config.yaml`)
 - DynamoDB session memory via `create_dynamodb_memory_table`
 - DynamoDB multimodal memory via `create_dynamodb_multimodal_memory_table`
 - DynamoDB response storage via `create_dynamodb_response_store`
@@ -1036,7 +1042,7 @@ module "async_api" {
 }
 ```
 
-Swap `create_redis_response_store = true` for `create_dynamodb_response_store = true` if you want DynamoDB-backed response storage instead of Redis.
+Swap `create_redis_response_store = true` for `create_dynamodb_response_store = true` (DynamoDB) or `create_valkey_response_store = true` (Valkey) if you want a different response store backend. At most one of the three may be `true`. For Valkey, also set `execution.response_store.type: valkey` in `config.yaml`.
 
 ## 🔐 Custom Authorizer Configuration
 

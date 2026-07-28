@@ -191,8 +191,9 @@ module "agent_runner_lambda" {
   layers                 = local.agent_runner_layers
 
   s3_existing_package = var.is_production && var.agent_runner.package_type == "S3Zip" ? {
-    bucket = data.aws_s3_object.signed_component_code[0].bucket
-    key    = data.aws_s3_object.signed_component_code[0].key
+    bucket     = data.aws_s3_object.signed_component_code[0].bucket
+    key        = data.aws_s3_object.signed_component_code[0].key
+    version_id = try(data.aws_s3_object.signed_component_code[0].version_id, null)
   } : var.s3_existing_package
 
   code_signing_config_arn = (var.agent_runner.package_type == "S3Zip" && var.is_production) ? var.lambda_signing_config_arn : null
@@ -208,6 +209,9 @@ module "agent_runner_lambda" {
     local.agent_runner_env_vars,
     var.redis_url != null ? {
       AK_SESSION__REDIS__URL = var.redis_url
+    } : {},
+    var.valkey_url != null ? {
+      AK_SESSION__VALKEY__URL = var.valkey_url
     } : {},
     var.dynamodb_memory_table_arn != null ? {
       AK_SESSION__DYNAMODB__TABLE_NAME = var.dynamodb_memory_table_name

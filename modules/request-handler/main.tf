@@ -245,8 +245,9 @@ module "lambda_deployment" {
   code_signing_config_arn = (var.package_type == "S3Zip" && var.is_production == true) ? var.lambda_signing_config_arn : null
 
   s3_existing_package = var.is_production && var.package_type == "S3Zip" ? {
-    bucket = data.aws_s3_object.signed_component_code[0].bucket
-    key    = data.aws_s3_object.signed_component_code[0].key
+    bucket     = data.aws_s3_object.signed_component_code[0].bucket
+    key        = data.aws_s3_object.signed_component_code[0].key
+    version_id = try(data.aws_s3_object.signed_component_code[0].version_id, null)
   } : var.s3_existing_package
 
   environment_variables = merge(var.environment_variables, {
@@ -257,6 +258,9 @@ module "lambda_deployment" {
       var.redis_url != null ? {
       AK_SESSION__REDIS__URL = var.redis_url
     } : {},
+      var.valkey_url != null ? {
+      AK_SESSION__VALKEY__URL = var.valkey_url
+    } : {},
       var.dynamodb_memory_table_arn != null ? {
       AK_SESSION__DYNAMODB__TABLE_NAME = var.dynamodb_memory_table_name
     } : {},
@@ -265,6 +269,9 @@ module "lambda_deployment" {
     } : {},
       var.response_store_redis != null ? {
       AK_EXECUTION__RESPONSE_STORE__REDIS__URL = var.response_store_redis.url
+    } : {},
+      var.response_store_valkey != null ? {
+      AK_EXECUTION__RESPONSE_STORE__VALKEY__URL = var.response_store_valkey.url
     } : {},
       var.response_store_dynamodb != null ? {
       AK_EXECUTION__RESPONSE_STORE__DYNAMODB__TABLE_NAME = var.response_store_dynamodb.table_name
