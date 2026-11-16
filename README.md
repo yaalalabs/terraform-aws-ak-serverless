@@ -11,7 +11,7 @@ This module provides a complete serverless deployment solution:
 - 🔌 **WebSocket API**: Real-time bidirectional communication with connection lifecycle management
 - 📦 **Flexible Deployment**: Support for ZIP packages, S3 storage, and container images
 - 🔒 **Security**: Code signing, IAM roles, and CloudWatch logging
-- 🔒 **Custom Authorization**: Lambda-based API Gateway authorizer support
+- 🔒 **Authorization**: Lambda-based API Gateway authorizer support; the framework's `APIGatewayAuthorizer` authenticates through the application's `identity` block
 - 📦 **Queue Mode**: SQS-driven async processing with agent runner and response handler functions
 - 🏷️ **Best Practices**: Automatic runtime selection and resource tagging
 - 📊 **Monitoring**: CloudWatch logs with configurable retention
@@ -23,7 +23,7 @@ Perfect for microservices, API backends, event-driven architectures, and serverl
 | Name | Version |
 |------|---------|
 | Terraform | >= 1.9.5 |
-| AWS Provider | >= 6.11.0 |
+| AWS Provider | 6.70.0 (pinned) |
 | Docker Provider | 3.6.2 |
 
 ## 🔌 Providers
@@ -170,6 +170,7 @@ module "websocket_api" {
   
   # WebSocket configuration
   execution_mode = "async"
+  message_type   = "delta" # one STREAM_CHUNK per chunk; omit for one CHAT_RESPONSE per reply
   queue_mode     = true
   
   # Customize WebSocket routes
@@ -197,7 +198,7 @@ module "websocket_api" {
   }
   
   # The WebSocket connection DynamoDB table is created automatically.
-  # Note: in WebSocket modes (async/stream), a response store is not used and
+  # Note: in WebSocket mode (async), a response store is not used and
   # `create_dynamodb_response_store` / `create_redis_response_store` must be `false` (Terraform validation enforces this).
 
   environment_variables = {
@@ -418,7 +419,9 @@ module "serverless_api_auth" {
     }
   }
 
-  # Authorizer configuration
+  # Authorizer configuration: the package holds `auth.py` (one line, `APIGatewayAuthorizer().handle`)
+  # and the application's config.yaml with its `identity` block; the environment carries what that
+  # block's provider needs (the static provider's credential here, nothing for an oidc block).
   authorizer = {
     description           = "API Gateway Lambda Authorizer"
     function_name         = "api-authorizer"
@@ -427,8 +430,7 @@ module "serverless_api_auth" {
     package_type          = "LocalZip"
     result_ttl_in_seconds = 300
     environment_variables = {
-      JWT_SECRET = "your-secret-key"
-      API_URL    = "https://api.example.com"
+      DEMO_AUTH_TOKEN = var.demo_auth_token
     }
   }
 
@@ -448,7 +450,8 @@ module "serverless_api_auth" {
 | `is_production` | Enable production features (code signing) | `bool` | `false` | no |
 | `enable_api_gateway` | Enable API Gateway and request handler Lambda (can only be false when queue_mode is true) | `bool` | `true` | no |
 | `queue_mode` | Enable SQS-driven processing with agent runner and response handler Lambdas | `bool` | `false` | no |
-| `execution_mode` | Execution mode: `rest_sync` (default), `rest_async` (queue mode only), `async` (WebSocket, full-response), or `stream` (WebSocket, token-by-token). `async` and `stream` create a WebSocket API and require `ws_connection_handler.package_path`. Cannot be `rest_async` when `queue_mode = false`. | `string` | `"rest_sync"` | no |
+| `execution_mode` | Execution mode: `rest_sync` (default), `rest_async` (queue mode only), or `async` (WebSocket). `async` creates a WebSocket API and requires `ws_connection_handler.package_path`. Cannot be `rest_async` when `queue_mode = false`. `stream` was removed and fails at `terraform plan`: use `async` with `message_type = "delta"`. | `string` | `"rest_sync"` | no |
+| `message_type` | Reply delivery, injected as `AK_EXECUTION__MESSAGE_TYPE`: `complete` (whole reply in one message) or `delta` (one message per chunk). `null` leaves Agent Kernel's default (`complete`). With `async`, `complete` pushes one `CHAT_RESPONSE` and `delta` pushes one `STREAM_CHUNK` per chunk, ending with `done: true`. On Lambda, use `delta` only with `async`: `rest_sync` + `delta` is refused at REST router init (the Lambda REST router does not stream), `rest_async` + `delta` fails at config load, and `LambdaWebhookHost` refuses `delta`. Terraform validates the value only; Agent Kernel checks the combination at startup. | `string` | `null` | no |
 | `event_source_mapping` | Event source mapping configuration for triggers | `any` | `[]` | no |
 | `environment_variables` | Environment variables for Lambda function | `map(string)` | `{}` | no |
 | `timeout` | Lambda function timeout in seconds (max 900) | `number` | `45` | no |
@@ -461,23 +464,23 @@ module "serverless_api_auth" {
 | `api_version` | API version for endpoint path (e.g., `v1`, `v2`). Not used in WebSocket modes. | `string` | `"v1"` | no |
 | `agent_endpoint` | API endpoint name (e.g., `chat`, `process`). Not used in WebSocket modes. | `string` | `"chat"` | no |
 | `api_base_path` | Optional base path segment for the API (e.g., `api`). Not used in WebSocket modes. | `string` | `"api"` | no |
-| `ws_chat_route` | WebSocket default chat route name. Only used in `async`/`stream` modes. | `string` | `"chat"` | no |
-| `ws_routes` | List of custom WebSocket routes beyond the default chat route. Only allowed in `async`/`stream` modes. | `list(object)` | `[]` | no |
+| `ws_chat_route` | WebSocket default chat route name. Only used in `async` mode. | `string` | `"chat"` | no |
+| `ws_routes` | List of custom WebSocket routes beyond the default chat route. Only allowed in `async` mode. | `list(object)` | `[]` | no |
 | `gateway_endpoints` | List of REST API endpoints to expose. Not allowed in WebSocket modes. If empty, a default POST /api/{api_version}/{agent_endpoint} is created. | `list(object)` | `[]` | no |
 | `create_redis_cluster` | Create a Redis cluster for Agent session memory | `bool` | `false` | no |
 | `create_valkey_cluster` | Create a Valkey (ElastiCache) cluster for Agent session memory | `bool` | `false` | no |
 | `create_dynamodb_memory_table` | Enable DynamoDB table for session storage | `bool` | `false` | no |
-| `create_dynamodb_thread_table` | Create a DynamoDB table for conversation thread storage and inject its generated name as `AK_THREAD__DYNAMODB__TABLE_NAME` into both Lambdas. Thread support is enabled by the application declaring `thread.type: dynamodb` in `config.yaml` — setting this flag alone leaves threads on the in-memory backend. Note that enabling threads makes `user_id` required on every chat request. | `bool` | `false` | no |
-| `enable_scheduling` | Create the EventBridge Scheduler schedule group and the execution role Scheduler assumes to deliver triggers to the Input Queue, grant both Lambda roles `scheduler:*Schedule` + `iam:PassRole` on them, and inject `AK_SCHEDULE__PROVIDER__EVENTBRIDGE__GROUP_NAME` / `__ROLE_ARN` / `__QUEUE_ARN`. **Requires `queue_mode = true`**, and flips the Input Queue to content-based deduplication (Scheduler cannot set a `MessageDeduplicationId`). The capability is enabled by the application declaring `schedule.provider.type: eventbridge` in `config.yaml` — setting this flag alone leaves scheduling on the in-process `local` provider. | `bool` | `false` | no |
-| `ssm_enabled` | Grant the Lambda that runs the agent (the agent runner when `queue_mode = true`, otherwise the request handler; never the response or WebSocket connection handler) `ssm:GetParameter` on `arn:aws:ssm:<region>:<account>:parameter/ak/<prefix>/*` and inject `AK_SECRET__PREFIX = <prefix>`. The capability is enabled by the application declaring `secret.provider.type: aws_ssm` in `config.yaml`, which then resolves a key such as `OPENAI_API_KEY` from `/ak/<prefix>/openai_api_key` whenever the environment variable of that name is unset or empty. **Terraform does not create the parameters** — create them yourself as `SecureString` (AWS-managed `alias/aws/ssm` key). | `bool` | `false` | no |
+| `create_dynamodb_thread_table` | Create a DynamoDB table for conversation thread storage and inject its generated name as `AK_THREAD__DYNAMODB__TABLE_NAME` into both Lambdas. Thread support is enabled by the application declaring `thread.type: dynamodb` in `config.yaml`; setting this flag alone leaves threads on the in-memory backend. Note that enabling threads requires an authenticated caller: an `identity` block in `config.yaml` and a bearer token on every chat request. | `bool` | `false` | no |
+| `enable_scheduling` | Create the EventBridge Scheduler schedule group and the execution role Scheduler assumes to deliver triggers to the Input Queue, grant both Lambda roles `scheduler:*Schedule` + `iam:PassRole` on them, and inject `AK_SCHEDULE__PROVIDER__EVENTBRIDGE__GROUP_NAME` / `__ROLE_ARN` / `__QUEUE_ARN`. **Requires `queue_mode = true`**, and flips the Input Queue to content-based deduplication (Scheduler cannot set a `MessageDeduplicationId`). The capability is enabled by the application declaring `schedule.provider.type: eventbridge` in `config.yaml`; setting this flag alone leaves scheduling on the in-process `local` provider. | `bool` | `false` | no |
+| `ssm_enabled` | Grant the Lambdas that resolve framework credentials (the request handler, which runs the agent when `queue_mode = false` and verifies messaging-integration webhooks, and, when `queue_mode = true`, the agent runner and the response handler, which delivers integration replies; plus the authorizer, whose identity provider resolves its credentials; never the WebSocket connection handler) `ssm:GetParameter` on `arn:aws:ssm:<region>:<account>:parameter/ak/<prefix>/*` and inject `AK_SECRET__PREFIX = <prefix>`. The capability is enabled by the application declaring `secret.provider.type: aws_ssm` in `config.yaml`, which then resolves a key such as `OPENAI_API_KEY` from `/ak/<prefix>/openai_api_key` whenever the environment variable of that name is unset or empty. **Terraform does not create the parameters**: create them yourself as `SecureString` (AWS-managed `alias/aws/ssm` key). | `bool` | `false` | no |
 | `create_dynamodb_schedule_table` | Create a DynamoDB table for scheduled-task storage (partition `task_id`, no sort key, no GSI, TTL on `expiry_time`) and inject its generated name as `AK_SCHEDULE__STORE__DYNAMODB__TABLE_NAME` into both Lambdas. Requires the application to declare `schedule.store.type: dynamodb` in `config.yaml`. | `bool` | `false` | no |
-| `create_redis_response_store` | Create or reuse Redis for response storage. Ignored in WebSocket modes (`async`/`stream`). | `bool` | `false` | no |
-| `create_valkey_response_store` | Create or reuse Valkey for response storage. Ignored in WebSocket modes (`async`/`stream`). | `bool` | `false` | no |
-| `create_dynamodb_response_store` | Create a DynamoDB table for response storage. Ignored in WebSocket modes (`async`/`stream`). | `bool` | `false` | no |
+| `create_redis_response_store` | Create or reuse Redis for response storage. Must be `false` when `execution_mode = "async"` (Terraform validation enforces this). | `bool` | `false` | no |
+| `create_valkey_response_store` | Create or reuse Valkey for response storage. Must be `false` when `execution_mode = "async"` (Terraform validation enforces this). | `bool` | `false` | no |
+| `create_dynamodb_response_store` | Create a DynamoDB table for response storage. Must be `false` when `execution_mode = "async"` (Terraform validation enforces this). | `bool` | `false` | no |
 | `create_dynamodb_multimodal_memory_table` | Create a DynamoDB table for multimodal memory. The request handler gets the table in every mode, `queue_mode` included, because messaging integrations download and store attachments at the edge. | `bool` | `false` | no |
-| `authorizer` | Authorizer configuration object (see table below). **Cannot be set** in WebSocket modes (`async`/`stream`) — authentication is handled by the connection handler Lambda. | `object` | `null` | no |
+| `authorizer` | Authorizer configuration object (see table below). **Cannot be set** in WebSocket mode (`async`): authentication is handled by the connection handler Lambda. | `object` | `null` | no |
 | `request_handler` | Request handler configuration object (see table below) | `object` | `{}` | no |
-| `ws_connection_handler` | WebSocket connection handler configuration object (see table below). `package_path` is required when `execution_mode` is `async` or `stream`. | `object` | `{}` | no |
+| `ws_connection_handler` | WebSocket connection handler configuration object (see table below). `package_path` is required when `execution_mode` is `async`. | `object` | `{}` | no |
 | `response_handler` | Response handler configuration object (see table below) | `object` | `{}` | no |
 | `agent_runner` | Agent runner configuration object (see table below) | `object` | `{}` | no |
 | `queue_config` | SQS queues configuration object (see table below) | `object` | `{}` | no |
@@ -531,19 +534,19 @@ module "serverless_api_auth" {
 | `timeout` | WebSocket connection handler Lambda timeout in seconds | `number` | `30` | no |
 | `memory_size` | WebSocket connection handler Lambda memory size in MB | `number` | `256` | no |
 | `handler_path` | WebSocket connection handler Lambda handler path | `string` | `"ws_connection_handler.handler"` | no |
-| `package_path` | WebSocket connection handler deployment package path (only LocalZip supported) | `string` | n/a | **yes** (when `execution_mode` is `async` or `stream`) |
+| `package_path` | WebSocket connection handler deployment package path (only LocalZip supported) | `string` | n/a | **yes** (when `execution_mode` is `async`) |
 | `layers` | List of Lambda layer ARNs to attach | `list(string)` | `[]` | no |
 | `cloudwatch_logs_retention_in_days` | CloudWatch log retention period in days | `number` | `90` | no |
 | `environment_variables` | Environment variables for the WebSocket connection handler | `map(string)` | `{}` | no |
 
 ### WebSocket Routes Configuration
 
-When using `execution_mode = "async"` or `"stream"`, you can customize WebSocket routes:
+When using `execution_mode = "async"`, you can customize WebSocket routes:
 
 | Variable | Description | Type | Default | Validation |
 |----------|-------------|------|---------|------------|
 | `ws_chat_route` | Name of the default chat route | `string` | `"chat"` | Must contain only alphanumeric characters, hyphens (`-`), and underscores (`_`). Cannot contain `/` or be empty. |
-| `ws_routes` | List of additional custom routes | `list(object({ route = string }))` | `[]` | Only allowed in `async`/`stream` modes. Each route must follow the same naming rules as `ws_chat_route`. |
+| `ws_routes` | List of additional custom routes | `list(object({ route = string }))` | `[]` | Only allowed in `async` mode. Each route must follow the same naming rules as `ws_chat_route`. |
 
 **Example WebSocket Routes Configuration**:
 ```hcl
@@ -653,7 +656,7 @@ The root `queue_config` object drives the SQS queues created for queue mode. All
 
 These three fields live on the `request_handler`, `agent_runner`, and `response_handler` config objects
 (see the object-structure tables above) alongside that Lambda's other settings, rather than as
-standalone top-level variables — one security group per pipeline stage, mirroring the containerized
+standalone top-level variables, one security group per pipeline stage, mirroring the containerized
 module's per-service SG split.
 
 | Field | Object | Description | Type | Default | Required |
@@ -679,7 +682,7 @@ response_handler = {
 }
 ```
 
-Each of the three is independent — you may provide any subset of them and let the module create the
+Each of the three is independent: you may provide any subset of them and let the module create the
 rest. Useful when the deploying pipeline can't create security groups (no `ec2:CreateSecurityGroup`),
 when org policy disallows the default `0.0.0.0/0` egress these modules create, or when a downstream
 resource (e.g. RDS, ElastiCache) already has ingress rules referencing a specific, pre-approved
@@ -687,7 +690,7 @@ security group. `agent_runner.security_group_id` and `response_handler.security_
 effect when `queue_mode = true`.
 
 A provided security group must permit the egress its Lambda needs (ElastiCache/Redis, DynamoDB, SQS,
-model APIs), since traffic fails at runtime (not at plan/apply) if it doesn't — the module-created SGs
+model APIs), since traffic fails at runtime (not at plan/apply) if it doesn't; the module-created SGs
 are egress-all:
 
 - `request_handler.security_group_id`: also used by the authorizer and WebSocket connection handler
@@ -739,20 +742,20 @@ are egress-all:
 | `output_queue_name` | Name of the output SQS queue (returns null when `queue_mode = false`) |
 | `output_dlq_arn` | ARN of the output SQS dead-letter queue (returns null when `queue_mode = false`) |
 | `output_dlq_url` | URL of the output SQS dead-letter queue (returns null when `queue_mode = false`) |
-| `websocket_api_endpoint_url` | WebSocket API endpoint URL (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_api_id` | WebSocket API ID (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_api_execution_arn` | WebSocket API execution ARN (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_api_stage_name` | WebSocket API stage name (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_api_stage_arn` | WebSocket API stage ARN (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_connection_table_name` | DynamoDB table name for WebSocket connection mapping (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_connection_table_arn` | DynamoDB table ARN for WebSocket connection mapping (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_cloudwatch_log_group_arn` | ARN of the CloudWatch log group for WebSocket API (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `websocket_cloudwatch_log_group_name` | Name of the CloudWatch log group for WebSocket API (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `ws_connection_handler_lambda_function_arn` | ARN of the WebSocket connection handler Lambda function (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `ws_connection_handler_lambda_function_name` | Name of the WebSocket connection handler Lambda function (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `ws_connection_handler_lambda_function_invoke_arn` | Invoke ARN of the WebSocket connection handler Lambda function (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `ws_connection_handler_lambda_role_arn` | ARN of the WebSocket connection handler Lambda execution role (returns null when not in a WebSocket mode (`async`/`stream`)) |
-| `ws_connection_handler_lambda_role_name` | Name of the WebSocket connection handler Lambda execution role (returns null when not in a WebSocket mode (`async`/`stream`)) |
+| `websocket_api_endpoint_url` | WebSocket API endpoint URL (returns null when `execution_mode` is not `async`) |
+| `websocket_api_id` | WebSocket API ID (returns null when `execution_mode` is not `async`) |
+| `websocket_api_execution_arn` | WebSocket API execution ARN (returns null when `execution_mode` is not `async`) |
+| `websocket_api_stage_name` | WebSocket API stage name (returns null when `execution_mode` is not `async`) |
+| `websocket_api_stage_arn` | WebSocket API stage ARN (returns null when `execution_mode` is not `async`) |
+| `websocket_connection_table_name` | DynamoDB table name for WebSocket connection mapping (returns null when `execution_mode` is not `async`) |
+| `websocket_connection_table_arn` | DynamoDB table ARN for WebSocket connection mapping (returns null when `execution_mode` is not `async`) |
+| `websocket_cloudwatch_log_group_arn` | ARN of the CloudWatch log group for WebSocket API (returns null when `execution_mode` is not `async`) |
+| `websocket_cloudwatch_log_group_name` | Name of the CloudWatch log group for WebSocket API (returns null when `execution_mode` is not `async`) |
+| `ws_connection_handler_lambda_function_arn` | ARN of the WebSocket connection handler Lambda function (returns null when `execution_mode` is not `async`) |
+| `ws_connection_handler_lambda_function_name` | Name of the WebSocket connection handler Lambda function (returns null when `execution_mode` is not `async`) |
+| `ws_connection_handler_lambda_function_invoke_arn` | Invoke ARN of the WebSocket connection handler Lambda function (returns null when `execution_mode` is not `async`) |
+| `ws_connection_handler_lambda_role_arn` | ARN of the WebSocket connection handler Lambda execution role (returns null when `execution_mode` is not `async`) |
+| `ws_connection_handler_lambda_role_name` | Name of the WebSocket connection handler Lambda execution role (returns null when `execution_mode` is not `async`) |
 
 ## ✨ Features
 
@@ -802,8 +805,9 @@ When `queue_mode = true`, the module adds an asynchronous queue-driven path alon
 **Execution modes**:
 - `rest_sync`: synchronous REST requests
 - `rest_async`: chat path will have a POST and GET method, POST method would be to send the request, GET method is to get the response for that request (by `request_id`) via polling
-- `async`: WebSocket API — full response delivered in one message after the agent finishes
-- `stream`: WebSocket API — response streamed token-by-token as `STREAM_CHUNK` messages in real time
+- `async`: WebSocket API; with `message_type` unset or `"complete"`, the full response is delivered in one `CHAT_RESPONSE` message after the agent finishes; with `message_type = "delta"`, it is streamed as one `STREAM_CHUNK` message per chunk, ending with `done: true`
+
+`execution_mode = "stream"` was removed: use `execution_mode = "async"` with `message_type = "delta"`.
 
 **Operational rules**:
 - Input queue visibility timeout must be greater than or equal to the agent runner timeout
@@ -812,7 +816,7 @@ When `queue_mode = true`, the module adds an asynchronous queue-driven path alon
 
 ### 🔌 WebSocket API Architecture
 
-When `execution_mode = "async"` or `"stream"`, the module creates a WebSocket API Gateway for real-time bidirectional communication.
+When `execution_mode = "async"`, the module creates a WebSocket API Gateway for real-time bidirectional communication.
 
 **What gets created**:
 - WebSocket API Gateway with route selection based on `request.body.route`
@@ -826,7 +830,7 @@ When `execution_mode = "async"` or `"stream"`, the module creates a WebSocket AP
 - CloudWatch log groups and stage logging
 
 **WebSocket API features**:
-- Real-time bidirectional communication (`async`: full response; `stream`: one chunk per stream event)
+- Real-time bidirectional communication (`message_type = "complete"`: full response; `message_type = "delta"`: one chunk per stream event)
 - Connection lifecycle management
 - DynamoDB-backed connection mapping
 - Route-based message routing
@@ -834,22 +838,22 @@ When `execution_mode = "async"` or `"stream"`, the module creates a WebSocket AP
 - Support for custom routes beyond the default
 
 **Important notes**:
-- When `execution_mode = "async"` or `"stream"`, the `authorizer` must be null — API Gateway authorizer is not used; authentication is handled by the connection handler Lambda
-- The bearer token must include a `userId` claim for WebSocket connections
-- `ws_connection_handler.package_path` is required when `execution_mode` is `async` or `stream`
+- When `execution_mode = "async"`, the `authorizer` must be null: the API Gateway authorizer is not used; authentication is handled by the connection handler Lambda
+- The connection handler authenticates the `$connect` token through the identity provider in the application's `config.yaml` (packaged with it) and keys the connection by the principal's subject
+- `ws_connection_handler.package_path` is required when `execution_mode` is `async`
 - Only LocalZip package type is supported for the WebSocket connection handler
 - The WebSocket API uses `$request.body.route` for route selection
 - The default chat route name can be customized via `ws_chat_route` variable
-- Additional custom routes can be defined via `ws_routes` variable (allowed in both `async` and `stream` modes)
+- Additional custom routes can be defined via `ws_routes` variable (allowed only in `async` mode)
 - Route names must contain only alphanumeric characters, hyphens (`-`), and underscores (`_`)
 - Route names cannot contain `/` and cannot be empty or whitespace-only
-- `create_dynamodb_response_store` and `create_redis_response_store` are silently ignored in WebSocket modes
+- `create_dynamodb_response_store`, `create_redis_response_store` and `create_valkey_response_store` must be `false` in WebSocket mode (Terraform validation enforces this)
 
 **WebSocket Connection Table Schema**:
 
 The DynamoDB table (`websocket_connections`) stores user-to-connection mappings:
 
-- **Partition Key**: `user_id` (String) - User identifier
+- **Partition Key**: `user_id` (String) - the authenticated principal's subject
 - **Sort Key**: `connection_id` (String) - WebSocket connection ID
 - **GSI**: `connection_id-index` - Allows lookups by connection_id
 - **TTL Attribute**: `expiry_time` - Optional timestamp for automatic cleanup
@@ -880,7 +884,7 @@ The module supports the current Agent Kernel storage wiring for both session sta
 - **Code Signing**: Optional for production deployments
 - **VPC Support**: Compatible with VPC-based Lambda
 - **Encryption**: KMS encryption support for environment variables
-- **Custom Authorization**: Lambda-based API Gateway authorizer for request authentication and authorization
+- **Authorization**: Lambda-based API Gateway authorizer; the framework's `APIGatewayAuthorizer` authenticates every request through the application's identity provider
 
 ### 🏷️ Naming Conventions
 
@@ -1106,7 +1110,9 @@ Swap `create_redis_response_store = true` for `create_dynamodb_response_store = 
 
 ## 🔐 Custom Authorizer Configuration
 
-The module supports a Lambda-based API Gateway authorizer for custom authentication and authorization logic.
+The module supports a Lambda-based API Gateway authorizer. The authorizer Lambda runs the framework's `APIGatewayAuthorizer` (`handler = APIGatewayAuthorizer().handle`, the whole file), which authenticates every request's bearer token through the identity provider named by the `identity` block in the `config.yaml` packaged beside it (`static`, `oidc` for Auth0, Keycloak, Okta or any OpenID Connect issuer, `cognito`, `entra`, `firebase`, or a dotted path to your own provider); an accepted token yields an Allow policy whose context carries the principal for the request handler, a refused, expired or malformed token a 401 (the authorizer raises `Unauthorized`), and a request with no token a Deny (403). There is no validator code to write, and the module's contract is unchanged: `handler_path` names your entry point and `package_path` your package.
+
+Auth0 needs no provider of its own: it is an `oidc` configuration (the tenant's issuer with the trailing slash, the API identifier as the audience), with the `auth` extra in the authorizer package. See [Identity and Access](https://kernel.yaala.ai/docs/next/advanced/identity-and-access) for the block.
 
 ### Authorizer Setup
 
@@ -1117,12 +1123,11 @@ authorizer = {
   description           = "API Gateway Lambda Authorizer"  # Optional, defaults to this value
   function_name         = "api-authorizer"                 # Required
   handler_path          = "auth.handler"                   # Required
-  package_path          = "./dist/auth.zip"                # Required
+  package_path          = "./dist/auth.zip"                # Required: holds auth.py and config.yaml
   package_type          = "LocalZip"                       # Required
   result_ttl_in_seconds = 0                                # Optional, defaults to 150
   environment_variables = {                                # Optional, defaults to {}
-    JWT_SECRET = "your-secret-key"
-    API_URL    = "https://api.example.com"
+    DEMO_AUTH_TOKEN = var.demo_auth_token                  # what the identity provider needs (static credential; none for oidc)
   }
 }
 ```
